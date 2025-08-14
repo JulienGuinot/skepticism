@@ -1,14 +1,8 @@
 # RAG Service avec Recherche Web Intelligente
 
+Skepticism, le perlexity local?
+
 Un service RAG (Retrieval-Augmented Generation) avancé avec recherche web intelligente, suppression des stop words et analyse de sujets, utilisant Ollama pour les embeddings et la génération de réponses.
-
-## 🚀 Nouvelles Fonctionnalités
-
-- 🧠 **Recherche intelligente** avec suppression automatique des stop words
-- 🎯 **Extraction de sujets** pour des recherches plus précises  
-- 🔄 **Recherche multi-variantes** pour une couverture exhaustive
-- 📊 **Analyse de pertinence** des termes de recherche
-- 🌐 **Optimisation automatique** des requêtes web
 
 ## Fonctionnalités
 
