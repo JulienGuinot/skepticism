@@ -12,7 +12,7 @@ import { colors, colorize, success, error, info, formatMarkdown, dim, highlight 
 const defaultConfig: RAGConfig = {
     ollama: {
         baseUrl: 'http://localhost:11434',
-        model: 'llama3.2:latest',
+        model: 'gemma3:12b',
         embeddingModel: 'nomic-embed-text',
         temperature: 0.7,
         maxTokens: 2048

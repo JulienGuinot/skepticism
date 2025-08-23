@@ -16,9 +16,7 @@ export class TextChunker {
     };
   }
 
-  /**
-   * Divise un document en chunks
-   */
+
   chunkDocument(document: Document): Chunk[] {
     const chunks = this._splitText(document.content);
     
@@ -33,16 +31,12 @@ export class TextChunker {
     }));
   }
 
-  /**
-   * Divise plusieurs documents en chunks
-   */
+
   chunkDocuments(documents: Document[]): Chunk[] {
     return documents.flatMap(doc => this.chunkDocument(doc));
   }
 
-  /**
-   * Divise le texte en utilisant les séparateurs hiérarchiques
-   */
+
   private _splitText(text: string): string[] {
     if (text.length <= this.config.maxChunkSize) {
       return [text];
@@ -65,9 +59,7 @@ export class TextChunker {
     return this._splitByCharacters(text);
   }
 
-  /**
-   * Divise le texte par un séparateur spécifique avec overlap
-   */
+
   private _splitBySeparator(text: string, separator: string): string[] {
     const parts = text.split(separator);
     if (parts.length <= 1) return [text];
@@ -97,9 +89,7 @@ export class TextChunker {
     return chunks.filter(chunk => chunk.length > 0);
   }
 
-  /**
-   * Division par caractères en dernier recours
-   */
+
   private _splitByCharacters(text: string): string[] {
     const chunks: string[] = [];
     let start = 0;
@@ -126,9 +116,6 @@ export class TextChunker {
     return chunks;
   }
 
-  /**
-   * Ajoute l'overlap du chunk précédent
-   */
   private _addOverlap(existingChunks: string[], newPart: string): string {
     if (existingChunks.length === 0 || this.config.overlap === 0) {
       return newPart;
@@ -140,9 +127,7 @@ export class TextChunker {
     return overlapText + newPart;
   }
 
-  /**
-   * Estime le nombre de chunks pour un texte
-   */
+
   estimateChunkCount(text: string): number {
     if (text.length <= this.config.maxChunkSize) {
       return 1;
@@ -153,9 +138,6 @@ export class TextChunker {
     return Math.ceil(text.length / avgChunkSize);
   }
 
-  /**
-   * Valide la configuration de chunking
-   */
   validateConfig(): void {
     if (this.config.maxChunkSize <= 0) {
       throw new Error('maxChunkSize doit être positif');

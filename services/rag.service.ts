@@ -27,9 +27,7 @@ export class RAGService {
     this.chunker = new TextChunker(config.chunking);
   }
 
-  /**
-   * Initialise le service RAG
-   */
+ 
   async initialize(): Promise<void> {
     const isOllamaAvailable = await this.ollama.isAvailable();
     if (!isOllamaAvailable) {
@@ -153,7 +151,7 @@ export class RAGService {
       return {
         documentsAdded: documents.length,
         topicAnalysis: comprehensiveResult.topicAnalysis,
-        searchVariants: comprehensiveResult.resultsByVariant.map(r => r.variant)
+        searchVariants: comprehensiveResult.resultsByVariant.map(r => r.topic)
       };
 
     } catch (error: any) {
@@ -161,9 +159,7 @@ export class RAGService {
     }
   }
 
-  /**
-   * Ajoute des documents au RAG
-   */
+
   async addDocuments(documents: Document[]): Promise<void> {
     try {
       // Chunking des documents
@@ -188,18 +184,13 @@ export class RAGService {
     }
   }
 
-  /**
-   * Effectue une recherche RAG
-   */
+
   async search(searchQuery: SearchQuery): Promise<RAGResponse> {
     try {
       const startTime = Date.now();
-      
-
       // On normalise l'input
-      console.log(searchQuery.query)
       const normalizedInput = this._normalizeText(searchQuery.query)
-      console.log(normalizedInput)
+
       // Génère l'embedding de la requête
       const queryEmbedding = await this.ollama.generateEmbedding(normalizedInput);
       
@@ -249,9 +240,7 @@ export class RAGService {
     }
   }
 
-  /**
-   * Améliore les résultats avec une recherche web intelligente
-   */
+
   private async _enhanceWithWebSearch(searchQuery: SearchQuery, additionalResults: number): Promise<void> {
     try {
       const webResults = searchQuery.webSearchResults ?? Math.min(additionalResults, 3);
@@ -285,9 +274,7 @@ export class RAGService {
 
 
 
-  /**
-   * Convertit le contenu extrait en documents
-   */
+
   private _convertToDocuments(contents: ExtractedContent[]): Document[] {
     return contents.map((content, index) => ({
       id: `web_${Date.now()}_${index}`,
@@ -301,9 +288,7 @@ export class RAGService {
     }));
   }
 
-  /**
-   * Obtient les statistiques du RAG
-   */
+
   async getStats(): Promise<{
     vectorStore: Awaited<ReturnType<VectorStore['getStats']>>;
     config: RAGConfig;

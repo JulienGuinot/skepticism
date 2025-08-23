@@ -64,7 +64,7 @@ export const formatMarkdown = (text: string): string => {
 
     // Code inline (`code` -> code coloré)
     formatted = formatted.replace(/`([^`]+)`/g, (_, code) =>
-        colorize(code, colors.bgBlue + colors.white)
+        colorize(code, colors.magenta + colors.white)
     );
 
     // Listes (- item -> puce colorée)
