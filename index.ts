@@ -9,7 +9,7 @@ app.use(express.json());
 const defaultConfig: RAGConfig = {
     ollama: {
         baseUrl: 'http://localhost:11434',
-        model: 'llama3.2:latest', // Modèle pour la génération de texte
+        model: process.env.MODEL || 'llama3.2:latest', // Modèle pour la génération de texte
         embeddingModel: 'nomic-embed-text', // Modèle pour les embeddings
         temperature: 0.7,
         maxTokens: 2048
@@ -213,7 +213,7 @@ async function startServer() {
             console.log(`📄 Stats: GET /stats`);
             console.log(`❤️  Santé: GET /health`);
         });
-    } catch (error:any) {
+    } catch (error: any) {
         console.error('Erreur lors du démarrage:', error.message);
         process.exit(1);
     }

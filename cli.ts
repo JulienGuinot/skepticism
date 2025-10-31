@@ -12,7 +12,7 @@ import { colors, colorize, success, error, info, formatMarkdown, dim, highlight 
 const defaultConfig: RAGConfig = {
     ollama: {
         baseUrl: 'http://localhost:11434',
-        model: 'gemma3:12b',
+        model: process.env.MODEL || 'gemma3:1b',
         embeddingModel: 'nomic-embed-text',
         temperature: 0.7,
         maxTokens: 2048
@@ -160,36 +160,28 @@ ${colorize('└─────────────────────�
             if (needsMoreContent) {
                 this.stopSpinner(currentSpinner, 'Base existante insuffisante, enrichissement nécessaire');
 
-                // Import dynamique pour l'analyse
-                const { extractTopics } = await import('./utils/stopwords');
+                // Recherche web intelligente pour enrichir la base
+                currentSpinner = this.showLoadingSpinner('Recherche web intelligente en cours...');
 
-                // Analyse de la requête
-                const topicAnalysis = extractTopics(query, {
-                    language: 'both',
-                    minWordLength: 3,
-                    maxTopics: 6,
-                    preserveCapitalized: true
-                });
+                const enrichment = await this.ragService.addFromWebSearch(query, 8, true, true);
 
-                console.log(`\n${highlight('📊 Analyse automatique:')}`);
-                console.log(`  ${info('Sujets identifiés:')} ${topicAnalysis.topics.join(', ')}`);
-                console.log(`  ${info('Stop words supprimés:')} ${topicAnalysis.removedWords.join(', ')}`);
-                console.log(`  ${info('Requête optimisée:')} "${topicAnalysis.cleanedQuery}"`);
-
-                // Recherche comprehensive en mode silencieux
-                currentSpinner = this.showLoadingSpinner('Recherche web exhaustive en cours...');
-
-                const comprehensiveResult = await this.ragService.addFromComprehensiveSearch(query, {
-                    maxResults: 10,
-                    maxVariants: 4,
-                    silent: true // Mode silencieux pour éviter les conflits d'affichage
-                });
-
-                this.stopSpinner(currentSpinner, 'Recherche web terminée');
+                this.stopSpinner(currentSpinner, 'Enrichissement web terminé');
                 currentSpinner = null;
 
-                console.log(`${success('✓')} ${comprehensiveResult.documentsAdded} nouveaux documents ajoutés`);
-                console.log(`  ${info('Variantes utilisées:')} ${comprehensiveResult.searchVariants.join(' | ')}`);
+                if (enrichment.topicAnalysis) {
+                    const { topics, removedWords, cleanedQuery } = enrichment.topicAnalysis;
+                    console.log(`\n${highlight('📊 Analyse automatique:')}`);
+                    console.log(`  ${info('Requête originale:')} "${query}"`);
+                    console.log(`  ${info('Requête retenue:')} "${cleanedQuery || query}"`);
+                    console.log(`  ${info('Sujets identifiés:')} ${topics.length > 0 ? topics.join(', ') : '—'}`);
+                    console.log(`  ${info('Stop words supprimés:')} ${removedWords.length > 0 ? removedWords.join(', ') : '—'}`);
+                }
+
+                if (enrichment.executedQueries.length > 0) {
+                    console.log(`  ${info('Requêtes exécutées:')} ${enrichment.executedQueries.join(' | ')}`);
+                }
+
+                console.log(`${success('✓')} ${enrichment.documentsAdded} nouveaux documents ajoutés`);
 
                 // Nouvelle recherche avec le contenu enrichi
                 currentSpinner = this.showLoadingSpinner('Génération de la réponse finale...');
@@ -310,6 +302,9 @@ ${colorize('└─────────────────────�
                 console.log(`  ${info('Sujets identifiés:')} ${result.topicAnalysis.topics.join(', ')}`);
                 console.log(`  ${info('Stop words supprimés:')} ${result.topicAnalysis.removedWords.join(', ')}`);
                 console.log(`  ${info('Requête optimisée:')} "${result.topicAnalysis.cleanedQuery}"`);
+            }
+            if (result.executedQueries.length > 0) {
+                console.log(`  ${info('Requêtes exécutées:')} ${result.executedQueries.join(' | ')}`);
             }
             console.log('');
         } catch (error: any) {

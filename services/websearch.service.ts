@@ -1,15 +1,22 @@
 import * as cheerio from "cheerio";
 import { WebSearchConfig, ExtractedContent, SearchResult } from "../types/webSearch";
-import { extractTopics, generateSearchVariants, analyzeTopicRelevance, TopicExtractionOptions } from "../utils/stopwords";
+import { extractTopics, analyzeTopicRelevance, generateSearchVariants, TopicExtractionOptions } from "../utils/stopwords";
+
+type SearchPlanStep = {
+  query: string;
+  reason: string;
+  optional?: boolean;
+  limit?: number;
+};
 
 export class WebSearch {
-  
+
   private readonly _userAgent: string;
   private readonly _config: Required<WebSearchConfig>;
 
   constructor(config: WebSearchConfig = {}) {
     this._userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-    
+
     this._config = {
       maxResults: config.maxResults ?? 10,
       timeout: config.timeout ?? 15000,
@@ -22,15 +29,21 @@ export class WebSearch {
   }
 
 
-  async getTopUrls(query: string, searchEngine: 'google' | 'bing' | 'duckduckgo' = 'bing'): Promise<string[]> {
+  async getTopUrls(
+    query: string,
+    searchEngine: 'google' | 'bing' | 'duckduckgo' = 'bing',
+    limit?: number
+  ): Promise<string[]> {
     try {
       this._validateQuery(query);
 
       const searchResults = await this._performSearch(query, searchEngine);
       const filteredResults = this._filterResults(searchResults);
-      
+
+      const effectiveLimit = limit ?? this._config.maxResults;
+
       return filteredResults
-        .slice(0, this._config.maxResults)
+        .slice(0, effectiveLimit)
         .map(result => result.url);
 
     } catch (error: any) {
@@ -39,16 +52,20 @@ export class WebSearch {
   }
 
   async smartSearch(
-    query: string, 
+    query: string,
     searchEngine: 'google' | 'bing' | 'duckduckgo' = 'duckduckgo',
-    topicOptions: TopicExtractionOptions = {}
+    topicOptions: TopicExtractionOptions = {},
+    options: { maxResults?: number } = {}
   ): Promise<{
     results: ExtractedContent[];
     topicAnalysis: ReturnType<typeof extractTopics>;
     topics: string[];
+    executedQueries: string[];
   }> {
     try {
       this._validateQuery(query);
+
+      const desiredResults = Math.max(1, options.maxResults ?? this._config.maxResults);
 
       // Extraction des sujets principaux
       const topicAnalysis = extractTopics(query, {
@@ -70,20 +87,31 @@ export class WebSearch {
         .filter(t => t.category === 'high')
         .map(t => t.topic);
 
-      // Recherche avec la requête optimisée (sujets de haute pertinence d'abord)
-      const primaryQuery = highRelevanceTopics.length > 0 
-        ? highRelevanceTopics.join(' ')
-        : topicAnalysis.cleanedQuery;
+      const highPriorityLimit = Math.min(2, Math.max(0, highRelevanceTopics.length));
+      const searchPlan = this._buildSearchPlan(
+        query,
+        topicAnalysis,
+        highRelevanceTopics,
+        desiredResults,
+        highPriorityLimit
+      );
+      console.log(
+        `🎯 Stratégie de recherche: ${searchPlan
+          .map(step => `${step.reason} → "${step.query}"`)
+          .join(' | ')}`
+      );
 
-      console.log(`🎯 Requête principale optimisée: "${primaryQuery}"`);
+      const runResult = await this._runSearchPlan(searchPlan, searchEngine, desiredResults);
 
-      // Recherche principale
-      const results = await this.searchAndExtract(primaryQuery, searchEngine);
+      if (runResult.executedQueries.length > 0) {
+        console.log(`🔁 Requêtes exécutées: ${runResult.executedQueries.join(' | ')}`);
+      }
 
       return {
-        results,
+        results: runResult.results,
         topicAnalysis,
-        topics :topicAnalysis.topics
+        topics: topicAnalysis.topics,
+        executedQueries: runResult.executedQueries
       };
 
     } catch (error: any) {
@@ -99,8 +127,8 @@ export class WebSearch {
       this._validateUrls(urls);
 
       const results = await Promise.allSettled(
-        
-        urls.map(url => 
+
+        urls.map(url =>
           this._extractSingleContent(url)
         )
 
@@ -132,9 +160,13 @@ export class WebSearch {
   /**
    * Méthode combinée pour rechercher et extraire en une seule opération
    */
-  async searchAndExtract(query: string, searchEngine: 'google' | 'bing' | 'duckduckgo' = 'duckduckgo'): Promise<ExtractedContent[]> {
+  async searchAndExtract(
+    query: string,
+    searchEngine: 'google' | 'bing' | 'duckduckgo' = 'duckduckgo',
+    limit?: number
+  ): Promise<ExtractedContent[]> {
     try {
-      const urls = await this.getTopUrls(query, searchEngine);
+      const urls = await this.getTopUrls(query, searchEngine, limit);
       return await this.extractContents(urls);
     } catch (error: any) {
       throw new Error(`Erreur lors de la recherche et extraction: ${error.message}`);
@@ -151,6 +183,7 @@ export class WebSearch {
       maxVariants?: number;
       topicOptions?: TopicExtractionOptions;
       deduplicateResults?: boolean;
+      maxResults?: number;
     } = {}
   ): Promise<{
     allResults: ExtractedContent[];
@@ -159,56 +192,68 @@ export class WebSearch {
       results: ExtractedContent[];
     }>;
     topicAnalysis: ReturnType<typeof extractTopics>;
+    executedQueries: string[];
   }> {
     try {
-      const { maxVariants = 3, topicOptions = {}, deduplicateResults = true } = options;
+      const { maxVariants = 3, topicOptions = {}, deduplicateResults = true, maxResults } = options;
 
-      // Extraction des sujets
+      const desiredResults = Math.max(1, maxResults ?? Math.max(this._config.maxResults, 10));
+
       const topicAnalysis = extractTopics(query, {
         language: 'both',
         minWordLength: 3,
-        maxTopics: 6,
+        maxTopics: 8,
+        preserveCapitalized: true,
         ...topicOptions
       });
 
-      // Génération des variantes limitées
-    
+      const relevanceAnalysis = analyzeTopicRelevance(topicAnalysis.topics);
+      const prioritizedTopics = relevanceAnalysis.map(t => t.topic);
+      const prioritizedLimit = Math.min(maxVariants, prioritizedTopics.length);
 
-      console.log(`🔍 Recherche exhaustive pour: "${query}"`);
-      // Recherche pour chaque variante
-      const resultsByVariant = await Promise.all(
-        topicAnalysis.topics.map(async (topic) => {
-          try {
-            const results = await this.searchAndExtract(topic, searchEngine);
-            return { topic, results };
-          } catch (error) {
-            console.warn(`⚠️ Erreur pour la variante "${topic}":`, error);
-            return { topic, results: [] };
-          }
-        })
+      const searchPlan = this._buildSearchPlan(
+        query,
+        topicAnalysis,
+        prioritizedTopics,
+        desiredResults,
+        prioritizedLimit
       );
 
-      // Agrégation des résultats
-      let allResults = resultsByVariant.flatMap(r => r.results);
+      const existingQueries = new Set<string>(searchPlan.map(step => step.query));
+      const variantQueries = generateSearchVariants(topicAnalysis.topics)
+        .filter(variant => !existingQueries.has(variant))
+        .slice(0, Math.max(0, maxVariants - prioritizedLimit));
 
-      // Déduplication basée sur l'URL
-      if (deduplicateResults) {
-        const seenUrls = new Set<string>();
-        allResults = allResults.filter(result => {
-          if (seenUrls.has(result.url)) {
-            return false;
-          }
-          seenUrls.add(result.url);
-          return true;
+      variantQueries.forEach(variant => {
+        searchPlan.push({
+          query: variant,
+          reason: 'variante combinée',
+          optional: true,
+          limit: Math.max(1, Math.ceil(desiredResults / 3))
         });
+      });
+
+      console.log(`🔍 Recherche exhaustive pour: "${query}"`);
+
+      const runResult = await this._runSearchPlan(searchPlan, searchEngine, desiredResults);
+
+      let allResults = runResult.results;
+      if (deduplicateResults) {
+        allResults = this._filterNewResults(allResults, new Set<string>());
       }
+
+      const resultsByVariant = runResult.stepResults.map(({ step, results }) => ({
+        topic: step.query,
+        results
+      }));
 
       console.log(`✅ Recherche terminée: ${allResults.length} résultats uniques`);
 
       return {
         allResults,
         resultsByVariant,
-        topicAnalysis
+        topicAnalysis,
+        executedQueries: runResult.executedQueries
       };
 
     } catch (error: any) {
@@ -219,7 +264,7 @@ export class WebSearch {
 
 
 
-  
+
   private async _performSearch(query: string, searchEngine: string): Promise<SearchResult[]> {
     switch (searchEngine) {
       case 'duckduckgo':
@@ -232,7 +277,7 @@ export class WebSearch {
 
   private async _searchDuckDuckGo(query: string): Promise<SearchResult[]> {
     const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-    
+
     const response = await this._fetchWithRetry(searchUrl);
     const $ = cheerio.load(response);
     const results: SearchResult[] = [];
@@ -240,7 +285,7 @@ export class WebSearch {
     $('.result__body').each((index, element) => {
       const titleEl = $(element).find('.result__title a');
       const snippetEl = $(element).find('.result__snippet');
-      
+
       const title = titleEl.text().trim();
       const url = titleEl.attr('href');
       const snippet = snippetEl.text().trim();
@@ -259,7 +304,7 @@ export class WebSearch {
   }
 
 
-  
+
   private async _extractSingleContent(url: string): Promise<ExtractedContent> {
     try {
       //console.log(`Recherche sur ${url}`)
@@ -322,7 +367,7 @@ export class WebSearch {
 
   private _extractHeadings($: cheerio.CheerioAPI): string[] {
     const headings: string[] = [];
-    
+
     $('h1, h2, h3, h4, h5, h6').each((_, element) => {
       const text = $(element).text().trim();
       if (text && text.length > 0) {
@@ -359,8 +404,8 @@ export class WebSearch {
     const metadata: ExtractedContent['metadata'] = {};
 
     // Description
-    const description = $('meta[name="description"]').attr('content') || 
-                       $('meta[property="og:description"]').attr('content');
+    const description = $('meta[name="description"]').attr('content') ||
+      $('meta[property="og:description"]').attr('content');
     if (description) metadata.description = description.trim();
 
     // Mots-clés
@@ -368,14 +413,14 @@ export class WebSearch {
     if (keywords) metadata.keywords = keywords.trim();
 
     // Auteur
-    const author = $('meta[name="author"]').attr('content') || 
-                  $('meta[property="article:author"]').attr('content');
+    const author = $('meta[name="author"]').attr('content') ||
+      $('meta[property="article:author"]').attr('content');
     if (author) metadata.author = author.trim();
 
     // Date de publication
     const publishDate = $('meta[property="article:published_time"]').attr('content') ||
-                       $('meta[name="date"]').attr('content') ||
-                       $('time[datetime]').attr('datetime');
+      $('meta[name="date"]').attr('content') ||
+      $('time[datetime]').attr('datetime');
     if (publishDate) metadata.publishDate = publishDate.trim();
 
     // Langue
@@ -415,7 +460,7 @@ export class WebSearch {
 
       } catch (error: any) {
         lastError = error;
-        
+
         if (attempt < this._config.retryAttempts) {
           await this._delay(this._config.retryDelay * attempt);
           continue;
@@ -430,7 +475,7 @@ export class WebSearch {
   private _filterResults(results: SearchResult[]): SearchResult[] {
     return results.filter(result => {
       const domain = this._extractDomain(result.url);
-      
+
       // Exclure les domaines interdits
       if (this._config.excludeDomains.some(excluded => domain.includes(excluded))) {
         return false;
@@ -466,7 +511,7 @@ export class WebSearch {
       // Supprime les paramètres de tracking courants
       const urlObj = new URL(url);
       const trackingParams = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid'];
-      
+
       trackingParams.forEach(param => {
         urlObj.searchParams.delete(param);
       });
@@ -493,6 +538,180 @@ export class WebSearch {
       .replace(/\s+/g, ' ') // Normalise les espaces
       .replace(/\n\s*\n/g, '\n') // Supprime les lignes vides multiples
       .trim();
+  }
+
+
+  private async _runSearchPlan(
+    searchPlan: SearchPlanStep[],
+    searchEngine: 'google' | 'bing' | 'duckduckgo',
+    desiredResults: number
+  ): Promise<{
+    results: ExtractedContent[];
+    executedQueries: string[];
+    stepResults: Array<{ step: SearchPlanStep; results: ExtractedContent[] }>;
+  }> {
+    const aggregatedResults: ExtractedContent[] = [];
+    const seenUrls = new Set<string>();
+    const executedQueries: string[] = [];
+    const stepResults: Array<{ step: SearchPlanStep; results: ExtractedContent[] }> = [];
+
+    for (const step of searchPlan) {
+      if (step.optional && aggregatedResults.length >= desiredResults) {
+        continue;
+      }
+
+      const remainingSlots = desiredResults - aggregatedResults.length;
+      if (remainingSlots <= 0) {
+        break;
+      }
+
+      const queryLimit = step.limit ? Math.min(step.limit, remainingSlots) : remainingSlots;
+      const stepRawResults = await this.searchAndExtract(
+        step.query,
+        searchEngine,
+        Math.max(queryLimit, 1)
+      );
+      const newResults = this._filterNewResults(stepRawResults, seenUrls).slice(0, remainingSlots);
+
+      executedQueries.push(step.query);
+
+      if (newResults.length > 0) {
+        aggregatedResults.push(...newResults);
+      }
+
+      stepResults.push({ step, results: newResults });
+
+      if (aggregatedResults.length >= desiredResults) {
+        break;
+      }
+    }
+
+    return {
+      results: aggregatedResults,
+      executedQueries,
+      stepResults
+    };
+  }
+
+
+  private _buildSearchPlan(
+    originalQuery: string,
+    topicAnalysis: ReturnType<typeof extractTopics>,
+    highRelevanceTopics: string[],
+    desiredResults: number,
+    maxHighPriorityTopics: number = 2
+  ): SearchPlanStep[] {
+    const normalizedOriginal = originalQuery.trim();
+    const cleanedQuery = topicAnalysis.cleanedQuery.trim();
+    const plan: SearchPlanStep[] = [];
+
+    const fallbackToOriginal = this._shouldFallbackToOriginal(normalizedOriginal, topicAnalysis);
+
+    if (fallbackToOriginal || cleanedQuery.length === 0) {
+      plan.push({
+        query: normalizedOriginal,
+        reason: 'requête originale conservée'
+      });
+
+      if (cleanedQuery.length > 0 && cleanedQuery !== normalizedOriginal) {
+        plan.push({
+          query: cleanedQuery,
+          reason: 'variante sans stop words',
+          optional: true,
+          limit: Math.max(2, Math.ceil(desiredResults / 2))
+        });
+      }
+    } else {
+      plan.push({
+        query: cleanedQuery,
+        reason: 'requête optimisée'
+      });
+
+      if (cleanedQuery !== normalizedOriginal) {
+        plan.push({
+          query: normalizedOriginal,
+          reason: 'requête originale (contexte)',
+          optional: true,
+          limit: Math.max(2, Math.ceil(desiredResults / 2))
+        });
+      }
+    }
+
+    const highPriorityCap = Math.max(0, maxHighPriorityTopics);
+    if (highPriorityCap > 0) {
+      highRelevanceTopics
+        .filter(topic => topic.length > 0 && topic !== cleanedQuery && topic !== normalizedOriginal)
+        .slice(0, highPriorityCap)
+        .forEach(topic => {
+          plan.push({
+            query: topic,
+            reason: 'sujet prioritaire',
+            optional: true,
+            limit: Math.max(1, Math.ceil(desiredResults / 3))
+          });
+        });
+    }
+
+    return plan;
+  }
+
+
+  private _shouldFallbackToOriginal(
+    originalQuery: string,
+    topicAnalysis: ReturnType<typeof extractTopics>
+  ): boolean {
+    const normalized = originalQuery.trim();
+
+    if (normalized.length === 0) {
+      return true;
+    }
+
+    const cleanedQuery = topicAnalysis.cleanedQuery.trim();
+    if (cleanedQuery.length === 0) {
+      return true;
+    }
+
+    const { originalWordCount, finalWordCount, stopWordsRemoved } = topicAnalysis.stats;
+    const removalRatio = originalWordCount > 0 ? stopWordsRemoved / originalWordCount : 0;
+
+    const questionWords = ['comment', 'pourquoi', 'quel', 'quelle', 'quels', 'quelles', 'où', 'où', 'qui', 'combien'];
+    const startsWithQuestionWord = questionWords.some(word =>
+      normalized.toLowerCase().startsWith(`${word} `)
+    );
+
+    if (startsWithQuestionWord && removalRatio > 0.4) {
+      return true;
+    }
+
+    if (finalWordCount <= 2 && removalRatio >= 0.5) {
+      return true;
+    }
+
+    return false;
+  }
+
+
+  private _filterNewResults(
+    results: ExtractedContent[],
+    seenUrls: Set<string>
+  ): ExtractedContent[] {
+    const filtered: ExtractedContent[] = [];
+
+    for (const result of results) {
+      const url = result.url?.trim();
+      if (!url) {
+        continue;
+      }
+
+      if (seenUrls.has(url)) {
+        continue;
+      }
+
+      seenUrls.add(url);
+      filtered.push(result);
+    }
+
+    return filtered;
   }
 
 

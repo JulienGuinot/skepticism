@@ -3,12 +3,12 @@ import { VectorStore } from './vector.service';
 import { WebSearch } from './websearch.service';
 import { TextChunker } from '../utils/chunking';
 import { extractTopics, TopicExtractionOptions } from '../utils/stopwords';
-import { 
-  Document, 
-  Chunk, 
-  SearchQuery, 
-  RAGResponse, 
-  RAGConfig 
+import {
+  Document,
+  Chunk,
+  SearchQuery,
+  RAGResponse,
+  RAGConfig
 } from '../types/rag';
 import { ExtractedContent } from '../types/webSearch';
 
@@ -27,7 +27,7 @@ export class RAGService {
     this.chunker = new TextChunker(config.chunking);
   }
 
- 
+
   async initialize(): Promise<void> {
     const isOllamaAvailable = await this.ollama.isAvailable();
     if (!isOllamaAvailable) {
@@ -41,19 +41,28 @@ export class RAGService {
    * Ajoute du contenu au RAG depuis une recherche web intelligente
    */
   async addFromWebSearch(
-    query: string, 
+    query: string,
     maxResults: number = 5,
-    useSmartSearch: boolean = true,
+    useSmartSearch: boolean = false,
     silent: boolean = false
   ): Promise<{
     documentsAdded: number;
     topicAnalysis?: ReturnType<typeof extractTopics>;
+    executedQueries: string[];
   }> {
     try {
+      if (maxResults <= 0) {
+        if (!silent) {
+          console.log('ℹ️ Aucun document demandé via la recherche web (maxResults <= 0)');
+        }
+        return { documentsAdded: 0, executedQueries: [] };
+      }
+
       if (!silent) console.log(`🔍 Recherche web pour: "${query}"`);
-      
+
       let extractedContents: ExtractedContent[];
       let topicAnalysis: ReturnType<typeof extractTopics> | undefined;
+      let executedQueries: string[] = [];
 
       if (useSmartSearch) {
         // Utilise la recherche intelligente avec suppression des stop words
@@ -62,18 +71,25 @@ export class RAGService {
           minWordLength: 3,
           maxTopics: 6,
           preserveCapitalized: true
+        }, {
+          maxResults
         });
-        
+
         extractedContents = smartResult.results;
         topicAnalysis = smartResult.topicAnalysis;
-        
+        executedQueries = smartResult.executedQueries;
+
         if (!silent) {
           console.log(`📊 Sujets identifiés: ${topicAnalysis.topics.join(', ')}`);
           console.log(`🗑️ Stop words supprimés: ${topicAnalysis.removedWords.join(', ')}`);
+          if (smartResult.executedQueries.length > 0) {
+            console.log(`🔁 Requêtes exécutées: ${smartResult.executedQueries.join(' | ')}`);
+          }
         }
       } else {
         // Recherche classique
-        extractedContents = await this.webSearch.searchAndExtract(query);
+        extractedContents = await this.webSearch.searchAndExtract(query, 'duckduckgo', maxResults);
+        executedQueries = [query];
       }
 
       const successfulContents = extractedContents
@@ -91,7 +107,8 @@ export class RAGService {
 
       return {
         documentsAdded: documents.length,
-        topicAnalysis
+        topicAnalysis,
+        executedQueries
       };
 
     } catch (error: any) {
@@ -114,6 +131,7 @@ export class RAGService {
     documentsAdded: number;
     topicAnalysis: ReturnType<typeof extractTopics>;
     searchVariants: string[];
+    executedQueries: string[];
   }> {
     try {
       const { maxResults = 8, maxVariants = 3, topicOptions = {}, silent = false } = options;
@@ -131,7 +149,8 @@ export class RAGService {
             maxTopics: 6,
             ...topicOptions
           },
-          deduplicateResults: true
+          deduplicateResults: true,
+          maxResults
         }
       );
 
@@ -146,12 +165,20 @@ export class RAGService {
       const documents = this._convertToDocuments(successfulContents);
       await this.addDocuments(documents);
 
-      if (!silent) console.log(`✅ Recherche exhaustive terminée: ${documents.length} documents ajoutés`);
+      if (!silent) {
+        console.log(`✅ Recherche exhaustive terminée: ${documents.length} documents ajoutés`);
+        if (comprehensiveResult.executedQueries.length > 0) {
+          console.log(`🔁 Requêtes exécutées: ${comprehensiveResult.executedQueries.join(' | ')}`);
+        }
+      }
 
       return {
         documentsAdded: documents.length,
         topicAnalysis: comprehensiveResult.topicAnalysis,
-        searchVariants: comprehensiveResult.resultsByVariant.map(r => r.topic)
+        searchVariants: comprehensiveResult.executedQueries.filter((variant, index, arr) =>
+          variant !== query && arr.indexOf(variant) === index
+        ),
+        executedQueries: comprehensiveResult.executedQueries
       };
 
     } catch (error: any) {
@@ -178,7 +205,7 @@ export class RAGService {
 
       // Stockage dans le vector store
       await this.vectorStore.addChunks(chunksWithEmbeddings);
-      
+
     } catch (error: any) {
       throw new Error(`Erreur ajout documents: ${error.message}`);
     }
@@ -193,13 +220,13 @@ export class RAGService {
 
       // Génère l'embedding de la requête
       const queryEmbedding = await this.ollama.generateEmbedding(normalizedInput);
-      
+
       // Recherche dans le vector store
       const topK = searchQuery.topK ?? this.config.retrieval.topK;
       const threshold = searchQuery.threshold ?? this.config.retrieval.threshold;
-      
+
       let relevantChunks = await this.vectorStore.search(queryEmbedding, topK, threshold);
-      
+
       // Recherche web additionnelle si demandée et pas assez de résultats
       if (searchQuery.includeWebSearch && relevantChunks.length < topK) {
         await this._enhanceWithWebSearch(searchQuery, topK - relevantChunks.length);
@@ -244,13 +271,19 @@ export class RAGService {
   private async _enhanceWithWebSearch(searchQuery: SearchQuery, additionalResults: number): Promise<void> {
     try {
       const webResults = searchQuery.webSearchResults ?? Math.min(additionalResults, 3);
+      if (webResults <= 0) {
+        return;
+      }
       console.log(`🔍 Recherche web additionnelle intelligente: ${webResults} résultats`);
-      
+
       // Utilise la recherche intelligente pour de meilleurs résultats
       const result = await this.addFromWebSearch(searchQuery.query, webResults, true);
-      
+
       if (result.topicAnalysis) {
         console.log(`📈 Analyse des sujets: ${result.topicAnalysis.stats.stopWordsRemoved} stop words supprimés`);
+      }
+      if (result.executedQueries.length > 0) {
+        console.log(`🔁 Requêtes exécutées: ${result.executedQueries.join(' | ')}`);
       }
     } catch (error) {
       console.warn('⚠️ Erreur lors de la recherche web additionnelle:', error);
@@ -262,14 +295,14 @@ export class RAGService {
 
 
 
-  private _normalizeText(text:string) : string {
+  private _normalizeText(text: string): string {
     return text
-    .toLowerCase()                    // Casse uniforme
-    .normalize('NFD')                 // Décompose les accents
-    .replace(/[\u0300-\u036f]/g, '') // Supprime les accents
-    .replace(/[^\w\s]/g, ' ')        // Remplace ponctuation par espaces
-    .replace(/\s+/g, ' ')            // Normalise les espaces
-    .trim();
+      .toLowerCase()                    // Casse uniforme
+      .normalize('NFD')                 // Décompose les accents
+      .replace(/[\u0300-\u036f]/g, '') // Supprime les accents
+      .replace(/[^\w\s]/g, ' ')        // Remplace ponctuation par espaces
+      .replace(/\s+/g, ' ')            // Normalise les espaces
+      .trim();
   }
 
 
